@@ -9,70 +9,34 @@ from torch.autograd import Variable
 from tqdm import tqdm
 import json
 
-json1_file = open('word2ind.dict')
-json1_str = json1_file.read()
-word2ind = json.loads(json1_str)
-
-
 f = open('C:/Users/dilab3/Downloads/train.csv/train.csv', 'r', encoding='utf-8')
 rdr = csv.reader(f)
 
 dataset = []
+length = []
 for i, line in enumerate(rdr):
     if i!=0:
-        words = re.sub("[^\w]", " ",  str.lower(line[1])).split()
-        wordlist = []
-        for word in words:
-            if word in word2ind.keys():
-                wordlist.append(word2ind[word])
-            else:
-                wordlist.append(0)
-        if len(wordlist) < 64:
-            for _ in range(64-len(wordlist)):
-                wordlist.append(0)
-        elif len(wordlist) > 64:
-            wordlist = wordlist[0:64]
-
-        if sum(wordlist)==0:
-            print(line[1])
-            continue
+        l = line[1]
+        chars = [ord(c) for c in l]
+        for i, c in enumerate(chars):
+            if c>128:
+                chars[i]=0
+        length.append(len(chars))
+        if len(chars)<512:
+            for i in range(0,512-len(chars)):
+                chars.append(0)
+        else:
+            chars = chars[0:512]
 
         target = line[2:]
         target = list(map(float, target))
 
-        dataset.append((wordlist,target))
+        dataset.append((chars,target))
+
+length.sort()
+
 
 f.close()
-
-f = open('C:/Users/dilab3/Downloads/stanfordSentimentTreebank/stanfordSentimentTreebank/datasetSentences.txt', 'r', encoding='utf-8')
-rdr = csv.reader(f, delimiter='\t')
-f = open('C:/Users/dilab3/Downloads/stanfordSentimentTreebank/stanfordSentimentTreebank/sentiment_labels.txt', 'r', encoding='utf-8')
-rdr2 = csv.reader(f, delimiter='|')
-
-sst = []
-for i, (line, line2) in enumerate(zip(rdr, rdr2)):
-    if i!=0:
-        words = re.sub("[^\w]", " ",  str.lower(line[1])).split()
-        wordlist = []
-        for word in words:
-            if word in word2ind.keys():
-                wordlist.append(word2ind[word])
-            else:
-                wordlist.append(0)
-        if len(wordlist) < 64:
-            for _ in range(64-len(wordlist)):
-                wordlist.append(0)
-        elif len(wordlist) > 64:
-            wordlist = wordlist[0:64]
-
-        if sum(wordlist)==0:
-            print(line[1])
-            continue
-
-        target = [line2[1]]
-        target = list(map(float, target))
-
-        sst.append((wordlist, target))
 
 
 class Conv(nn.Module):
@@ -111,40 +75,64 @@ class Downsample(nn.Module):
     def forward(self, x):
         return self.layer1(x)
 
-embedding = nn.Embedding(len(word2ind)+1, 300)
-embedding.load_state_dict(torch.load('embed.pkl'))
+embedding = nn.Embedding(128, 64, padding_idx=0)
 
 # CNN Model (2 conv layer)
 class CNN(nn.Module):
     def __init__(self):
         super(CNN, self).__init__()
         self.embed = embedding
-        self.conv = nn.Sequential(
-            # nn.Dropout(),
-            Conv(1, 128, kernel_size=(3, 300), stride=(2, 1)),
-            nn.ReLU(),
-            DCNModule(128, 64, 16),
-            nn.MaxPool2d(kernel_size=(3, 1), stride=(2, 1), padding=(1, 0)),
-            DCNModule(128, 64, 16),
-            nn.AdaptiveMaxPool2d(1)
+        self.conv1 = nn.Sequential(
+            Conv(1, 16, kernel_size=(1, 64)),
+            nn.ReLU(inplace=True),
         )
-        self.fc = nn.Sequential(
-            nn.Dropout(),
-            nn.Linear(128, 6)
+        self.conv3 = nn.Sequential(
+            Conv(1, 16, kernel_size=(3, 64), padding=(1, 0)),
+            nn.ReLU(inplace=True),
+        )
+        self.conv5 = nn.Sequential(
+            Conv(1, 16, kernel_size=(5, 64), padding=(2, 0)),
+            nn.ReLU(inplace=True),
+        )
+
+        self.conv = nn.Sequential(
+            Conv(48, 1, kernel_size=(3, 1), padding=(1, 0)),
+            nn.ReLU(inplace=True),
+        )
+
+        self.fc1 = nn.Sequential(
+            # nn.Dropout(),
+            nn.Linear(512, 128),
+            nn.LogSoftmax(dim=1)
+        )
+
+        self.wconv = nn.Sequential(
+            Conv(1, 128, kernel_size=1),
+            nn.ReLU(inplace=True),
+            Conv(128, 64, kernel_size=(3, 1), padding=(1, 0)),
+            nn.ReLU(inplace=True),
+            nn.AdaptiveMaxPool2d(1)
         )
         self.fc2 = nn.Sequential(
             nn.Dropout(),
-            nn.Linear(128, 1)
+            nn.Linear(64, 6)
         )
 
     def forward(self, x, mode):
+        for i in range(0,64):
+            for j in range(0,512):
+                if(x.data[i][j]>128):
+                    print(x.data[i][j])
         x = self.embed(x).unsqueeze(1)
+        x = [self.conv1(x), self.conv3(x), self.conv5(x)]
+        x = torch.cat(x, 1)
         x = self.conv(x)
         x = x.view(x.size(0), -1)
-        if mode==1:
-            x = self.fc(x)
-        if mode==2:
-            x = self.fc2(x)
+        x = self.fc1(x)
+        x = x.view(x.size(0), 1, -1, 1)
+        x = self.wconv(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc2(x)
         return x
 
 cnn = CNN()
@@ -157,6 +145,7 @@ criterion = nn.BCEWithLogitsLoss()
 optimizer = torch.optim.Adam(cnn.parameters(), lr=learning_rate, weight_decay=1e-5)
 open("loss.txt", 'w')
 mean_loss = 0.2
+
 
 random.shuffle(dataset)
 trainset = dataset[:len(dataset)*9//10]
@@ -183,30 +172,7 @@ for epoch in range(num_epochs):
         loss.backward()
         optimizer.step()
 
-        mean_loss = 0.99*mean_loss + 0.01*loss.data[0]
-        pbar.set_description('Epoch [%d/%d] Loss : %f' % (epoch+1, num_epochs, mean_loss))
-    pbar.close()
-
-    pbar = tqdm(range(len(sst)//64))
-    random.shuffle(sst)
-    for i in pbar:
-        lists = sst[i*64:(i+1)*64]
-        batch = []
-        targets = []
-        for words, target in lists:
-            batch.append(torch.LongTensor(words))
-            targets.append(torch.FloatTensor(target))
-
-        input = Variable(torch.stack(batch, dim=0))
-        label = Variable(torch.stack(targets, dim=0))
-
-        # Forward + Backward + Optimize
-        optimizer.zero_grad()
-        outputs = cnn(input.detach(), 2)
-        loss = criterion(outputs, label.detach())
-        loss.backward()
-        optimizer.step()
-
+        # mean_loss = 0.99*mean_loss + 0.01*loss.data[0]
         pbar.set_description('Epoch [%d/%d] Loss : %f' % (epoch+1, num_epochs, loss.data[0]))
     pbar.close()
 
@@ -239,3 +205,4 @@ for epoch in range(num_epochs):
     f = open("loss.txt", 'a')
     f.write('Epoch [%d/%d] Loss : %f\n' % (epoch+1, num_epochs, avg_loss))
     f.close()
+
