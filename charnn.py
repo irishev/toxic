@@ -9,24 +9,39 @@ from torch.autograd import Variable
 from tqdm import tqdm
 import json
 
-f = open('C:/Users/dilab3/Downloads/train.csv/train.csv', 'r', encoding='utf-8')
+f = open('C:/test/train.csv', 'r', encoding='utf-8')
 rdr = csv.reader(f)
 
 dataset = []
 length = []
 for i, line in enumerate(rdr):
     if i!=0:
-        l = line[1]
+        l = re.sub("[^a-z \',.?!]", "",  str.lower(line[1]))
+        l = re.sub(r'([a-z \',.?!])\1{2,}', r'\1\1', l)
         chars = [ord(c) for c in l]
         for i, c in enumerate(chars):
-            if c>128:
+            if c==39:
+                chars[i]=27
+            elif c==33:
+                chars[i]=28
+            elif c==44:
+                chars[i]=29
+            elif c==46:
+                chars[i]=30
+            elif c==63:
+                chars[i]=31
+            elif c==32:
+                chars[i]=32
+            elif (c>122) or (c<97):
                 chars[i]=0
+            else:
+                chars[i] -= 96
         length.append(len(chars))
-        if len(chars)<512:
-            for i in range(0,512-len(chars)):
+        if len(chars)<4096:
+            for i in range(0,4096-len(chars)):
                 chars.append(0)
         else:
-            chars = chars[0:512]
+            chars = chars[0:4096]
 
         target = line[2:]
         target = list(map(float, target))
@@ -34,6 +49,7 @@ for i, line in enumerate(rdr):
         dataset.append((chars,target))
 
 length.sort()
+print(length[-1])
 
 
 f.close()
@@ -43,25 +59,26 @@ class Conv(nn.Module):
     def __init__(self, in_c, out_c, **kwargs):
         super(Conv, self).__init__()
         self.layer1 = nn.Sequential(
-            nn.Conv2d(in_c, out_c, bias=False, **kwargs),
-            #nn.BatchNorm2d(out_c),
+            nn.Conv2d(in_c, out_c, bias=True, **kwargs),
+            # nn.BatchNorm2d(out_c),
         )
     def forward(self, x):
         return self.layer1(x)
 
 class DCNModule(nn.Module):
-    def __init__(self, in_c, mid_c, c):
+    def __init__(self, ch, mid_ch, c):
         super(DCNModule,self).__init__()
-        self.layer1 = nn.Sequential(
-            Conv(in_c, mid_c, kernel_size=1),
-            nn.ReLU(),
-            Conv(mid_c, mid_c, kernel_size=(3,1), padding=(1,0), groups=c),
-            nn.ReLU(),
-            Conv(mid_c, in_c, kernel_size=1)
-        )
+        self.eql1 = Conv(ch, mid_ch, kernel_size=1)
+        self.layer1 = Conv(mid_ch, mid_ch, kernel_size=(3, 1), padding=(1, 0), groups=c)
+        self.layer2 = Conv(mid_ch, mid_ch, kernel_size=(5, 1), padding=(2, 0), groups=c)
+        self.layer3 = Conv(mid_ch, mid_ch, kernel_size=(7, 1), padding=(3, 0), groups=c)
+        self.eql2 = Conv(mid_ch * 3, ch, kernel_size=1)
 
     def forward(self, x):
-        return F.relu(self.layer1(x)+x)
+        out = F.relu(self.eql1(x), inplace=True)
+        out = [self.layer1(out), self.layer2(out), self.layer3(out)]
+        out = F.relu(torch.cat(out, 1), inplace=True)
+        return F.relu(self.eql2(out)+x, inplace=True)
 
 class Downsample(nn.Module):
     def __init__(self, in_c, out_c, c):
@@ -75,34 +92,53 @@ class Downsample(nn.Module):
     def forward(self, x):
         return self.layer1(x)
 
-embedding = nn.Embedding(128, 64, padding_idx=0)
 
 # CNN Model (2 conv layer)
 class CNN(nn.Module):
     def __init__(self):
         super(CNN, self).__init__()
-        self.embed = embedding
         self.conv1 = nn.Sequential(
-            Conv(1, 16, kernel_size=(1, 64)),
+            Conv(1, 64, kernel_size=(3, 32), padding=(1, 0)),
             nn.ReLU(inplace=True),
         )
         self.conv3 = nn.Sequential(
-            Conv(1, 16, kernel_size=(3, 64), padding=(1, 0)),
+            Conv(1, 64, kernel_size=(5, 32), padding=(2, 0)),
             nn.ReLU(inplace=True),
         )
         self.conv5 = nn.Sequential(
-            Conv(1, 16, kernel_size=(5, 64), padding=(2, 0)),
+            Conv(1, 128, kernel_size=(7, 32), padding=(3, 0)),
             nn.ReLU(inplace=True),
         )
 
         self.conv = nn.Sequential(
-            Conv(48, 1, kernel_size=(3, 1), padding=(1, 0)),
-            nn.ReLU(inplace=True),
+            DCNModule(256, 64, 16),
+            nn.MaxPool2d(kernel_size=(2, 1), stride=(2, 1)),
+            DCNModule(256, 64, 16),
+            nn.MaxPool2d(kernel_size=(2, 1), stride=(2, 1)),
+            DCNModule(256, 64, 16),
+            nn.MaxPool2d(kernel_size=(2, 1), stride=(2, 1)),
+            DCNModule(256, 64, 16),
+            nn.MaxPool2d(kernel_size=(2, 1), stride=(2, 1)),
+            DCNModule(256, 64, 16),
+            nn.MaxPool2d(kernel_size=(2, 1), stride=(2, 1)),
+            DCNModule(256, 64, 16),
+            nn.MaxPool2d(kernel_size=(2, 1), stride=(2, 1)),
+            DCNModule(256, 64, 16),
+            nn.MaxPool2d(kernel_size=(2, 1), stride=(2, 1)),
+            DCNModule(256, 64, 16),
+            nn.MaxPool2d(kernel_size=(2, 1), stride=(2, 1)),
+            DCNModule(256, 64, 16),
+            nn.MaxPool2d(kernel_size=(2, 1), stride=(2, 1)),
+            DCNModule(256, 64, 16),
+            nn.MaxPool2d(kernel_size=(2, 1), stride=(2, 1)),
+            DCNModule(256, 64, 16),
+            nn.MaxPool2d(kernel_size=(2, 1), stride=(2, 1)),
+            DCNModule(256, 64, 16),
+            nn.MaxPool2d(kernel_size=(2, 1), stride=(2, 1)),
         )
 
-        self.fc1 = nn.Sequential(
+        '''self.fc1 = nn.Sequential(
             # nn.Dropout(),
-            nn.Linear(512, 128),
             nn.LogSoftmax(dim=1)
         )
 
@@ -112,30 +148,27 @@ class CNN(nn.Module):
             Conv(128, 64, kernel_size=(3, 1), padding=(1, 0)),
             nn.ReLU(inplace=True),
             nn.AdaptiveMaxPool2d(1)
-        )
+        )'''
+
         self.fc2 = nn.Sequential(
             nn.Dropout(),
-            nn.Linear(64, 6)
+            nn.Linear(256, 6)
         )
 
-    def forward(self, x, mode):
-        for i in range(0,64):
-            for j in range(0,512):
-                if(x.data[i][j]>128):
-                    print(x.data[i][j])
-        x = self.embed(x).unsqueeze(1)
+    def forward(self, x):
+        x = x.unsqueeze(1)
         x = [self.conv1(x), self.conv3(x), self.conv5(x)]
         x = torch.cat(x, 1)
         x = self.conv(x)
-        x = x.view(x.size(0), -1)
-        x = self.fc1(x)
-        x = x.view(x.size(0), 1, -1, 1)
-        x = self.wconv(x)
+        # x = x.view(x.size(0), -1)
+        # x = self.fc1(x)
+        #x = x.view(x.size(0), 1, -1, 1)
+        #x = self.wconv(x)
         x = x.view(x.size(0), -1)
         x = self.fc2(x)
         return x
 
-cnn = CNN()
+cnn = CNN().cuda()
 
 learning_rate = 0.001
 num_epochs = 20
@@ -143,6 +176,7 @@ num_epochs = 20
 # Loss and Optimizer
 criterion = nn.BCEWithLogitsLoss()
 optimizer = torch.optim.Adam(cnn.parameters(), lr=learning_rate, weight_decay=1e-5)
+# scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[10], gamma=0.1)
 open("loss.txt", 'w')
 mean_loss = 0.2
 
@@ -152,6 +186,7 @@ trainset = dataset[:len(dataset)*9//10]
 testset = dataset[len(dataset)*9//10:]
 # Train the Model
 for epoch in range(num_epochs):
+    # scheduler.step()
     pbar = tqdm(range(len(trainset)//64))
     random.shuffle(trainset)
     for i in pbar:
@@ -159,16 +194,22 @@ for epoch in range(num_epochs):
         batch = []
         targets = []
         for words, target in lists:
-            batch.append(torch.LongTensor(words))
+            indices = torch.LongTensor(words).view(-1, 1)
+            one_hot = torch.zeros(4096, 33)
+            one_hot.scatter_(1, indices, 1)
+            batch.append(one_hot.narrow(1,1,32))
             targets.append(torch.FloatTensor(target))
 
-        input = Variable(torch.stack(batch, dim=0))
-        label = Variable(torch.stack(targets, dim=0))
+        input = torch.stack(batch, dim=0)
+        targets = torch.stack(targets, dim=0)
+
+        input = Variable(input.cuda())
+        label = Variable(targets.cuda())
 
         # Forward + Backward + Optimize
         optimizer.zero_grad()
-        outputs = cnn(input.detach(), 1)
-        loss = criterion(outputs, label.detach())
+        outputs = cnn(input)
+        loss = criterion(outputs, label)
         loss.backward()
         optimizer.step()
 
@@ -183,15 +224,18 @@ for epoch in range(num_epochs):
         batch = []
         targets = []
         for words, target in lists:
-            batch.append(torch.LongTensor(words))
+            indices = torch.LongTensor(words).view(-1, 1)
+            one_hot = torch.zeros(4096, 33)
+            one_hot.scatter_(1, indices, 1)
+            batch.append(one_hot.narrow(1, 1, 32))
             targets.append(torch.FloatTensor(target))
 
-        input = Variable(torch.stack(batch, dim=0))
-        label = Variable(torch.stack(targets, dim=0))
+        input = Variable(torch.stack(batch, dim=0)).cuda()
+        label = Variable(torch.stack(targets, dim=0)).cuda()
 
         # Forward
-        outputs = cnn(input.detach(),1)
-        loss = criterion(outputs, label.detach())
+        outputs = cnn(input)
+        loss = criterion(outputs, label)
 
         avg_loss += loss.data[0]
 
